@@ -7,7 +7,7 @@
 /* video controls */
 .controlsOverlay {
   -moz-box-pack: center;
-  -moz-box-align: end;
+  -moz-box-align: start;
   padding: 20px;
   -moz-box-flex: 1;
   -moz-box-orient: horizontal;
