@@ -75,7 +75,7 @@ EmbedHelper.prototype = {
     addMessageListener("embedui:find", this);
     addMessageListener("embedui:zoomToRect", this);
     // Metrics used when virtual keyboard is open/opening.
-    addMessageListener("embedui:vkbOpenCompositionMetrics", this);
+    addMessageListener("embedui:vkbFullyOpen", this);
     addMessageListener("Memory:Dump", this);
     addMessageListener("Gesture:ContextMenuSynth", this);
     addMessageListener("embed:ContextMenuCreate", this);
@@ -123,11 +123,11 @@ EmbedHelper.prototype = {
 //  this.scrollToFocusedInput(browser, false);
 
 
-  scrollToFocusedInput: function(aBrowser, aAllowZoom = true) {
-    let { inputElement: inputElement, isTextField: isTextField } = this.getFocusedInput(aBrowser);
+  scrollToFocusedInput: function(vkbOpenCompositionMetrics, aAllowZoom = true) {
+    let { inputElement: inputElement, isTextField: isTextField } = this.getFocusedInput(content);
     if (inputElement) {
       // _zoomToInput will handle not sending any message if this input is already mostly filling the screen
-      this._zoomToInput(inputElement, aAllowZoom, isTextField);
+      this._zoomToInput(inputElement, vkbOpenCompositionMetrics, aAllowZoom, isTextField);
     }
   },
 
@@ -238,6 +238,7 @@ EmbedHelper.prototype = {
   },
 
   _touchElement: null,
+  _isVkbOpen: false,
 
   receiveMessage: function receiveMessage(aMessage) {
     switch (aMessage.name) {
@@ -264,12 +265,9 @@ EmbedHelper.prototype = {
             this._sendMouseEvent("mousedown", element, x, y);
             this._sendMouseEvent("mouseup",   element, x, y);
 
-            // scrollToFocusedInput does its own checks to find out if an element should be zoomed into
-            let { targetWindow: targetWindow,
-                  offsetX: offsetX,
-                  offsetY: offsetY } = Util.translateToTopLevelWindow(element);
-
-            this.scrollToFocusedInput(targetWindow);
+            if (this._isVkbOpen) {
+              this.scrollToFocusedInput(this.vkbOpenCompositionMetrics);
+            }
           } catch(e) {
             Cu.reportError(e);
           }
@@ -347,9 +345,11 @@ EmbedHelper.prototype = {
         }
         break;
       }
-      case "embedui:vkbOpenCompositionMetrics": {
-        if (aMessage.data) {
+      case "embedui:vkbFullyOpen": {
+        this._isVkbOpen = aMessage.data.open;
+        if (this._isVkbOpen) {
           this.vkbOpenCompositionMetrics = aMessage.data;
+          this.scrollToFocusedInput(aMessage.data);
         }
         break;
       }
@@ -379,7 +379,7 @@ EmbedHelper.prototype = {
     return { vRect: vRect, overlap: overlap, overlapArea: overlapArea, availHeight: availHeight, showing: showing }
   },
 
-  _zoomToInput: function(aElement, aAllowZoom = true, aIsTextField = true) {
+  _zoomToInput: function(aElement, vkbOpenCompositionMetrics, aAllowZoom = true, aIsTextField = true) {
     // For possible error cases
     if (!this._viewportData)
       return;
@@ -387,28 +387,16 @@ EmbedHelper.prototype = {
     // Combination of browser.js _zoomToElement and special zoom logic
     let rect = ElementTouchHelper.getBoundingContentRect(aElement);
 
-    // Rough cssCompositionHeight as virtual keyboard is not yet raised (upper half).
-    let cssCompositionHeight = this._viewportData.cssCompositedRect.height / 2;
-    let maxCssCompositionWidth = this._viewportData.cssCompositedRect.width;
-    let maxCssCompositionHeight = cssCompositionHeight;
+    let maxCssCompositionWidth = vkbOpenCompositionMetrics.maxCssCompositionWidth;
+    let maxCssCompositionHeight = vkbOpenCompositionMetrics.maxCssCompositionHeight;
+    let cssCompositionHeight = this._viewportData.cssCompositedRect.height
 
-    if (this.vkbOpenCompositionMetrics) {
-        maxCssCompositionWidth = this.vkbOpenCompositionMetrics.maxCssCompositionWidth;
-        maxCssCompositionHeight = this.vkbOpenCompositionMetrics.maxCssCompositionHeight;
-        let currentCssCompositedHeight = this._viewportData.cssCompositedRect.height
-        // Are equal if vkb is already open and content is not pinched after vkb opening. It does not
-        // matter if currentCssCompositedHeight happens to match target before vkb has been opened.
-        if (maxCssCompositionHeight != currentCssCompositedHeight) {
-          cssCompositionHeight = this.vkbOpenCompositionMetrics.compositionHeight / this._viewportData.resolution.width;
-        } else {
-          cssCompositionHeight = currentCssCompositedHeight;
-        }
-    }
+
     // TODO / Missing: handle maximum zoom level and respect viewport meta tag
-    let scaleFactor = aIsTextField ? (this.inputItemSize / this.vkbOpenCompositionMetrics.compositionHeight) / (rect.h / cssCompositionHeight) : 1.0;
+    let scaleFactor = aIsTextField ? (this.inputItemSize / vkbOpenCompositionMetrics.compositionHeight) / (rect.h / cssCompositionHeight) : 1.0;
 
     let margin = this.zoomMargin / scaleFactor;
-    let allowZoom = aAllowZoom && rect.height != this.inputItemSize;
+    let allowZoom = aAllowZoom && rect.h != this.inputItemSize;
 
     // Calculate new css composition bounds that will be the bounds after zooming. Top-left corner is not yet moved.
     let cssCompositedRect = new Rect(this._viewportData.x,
@@ -420,7 +408,7 @@ EmbedHelper.prototype = {
                         allowZoom ? rect.w + 2 * margin : this._viewportData.viewport.width,
                         rect.h);
 
-    // constrict the rect to the screen's right edge
+    // construct the rect to the screen's right edge
     bRect.width = Math.min(bRect.width, (this._viewportData.cssPageRect.x + cssCompositedRect.x + this._viewportData.cssPageRect.width) - bRect.x);
 
     let dxLeft = rect.x - cssCompositedRect.x;
@@ -443,8 +431,6 @@ EmbedHelper.prototype = {
                              rect.y - halfMargin,
                              rect.w + halfMargin,
                              rect.h + halfMargin);
-
-    let { showing: showing } = this._rectVisibility(inputRect, fixedCurrentViewport);
 
     // Adjust position based on new composition area size.
     let needXAxisMoving = this._testXMovement(inputRect, fixedCurrentViewport);
@@ -486,11 +472,10 @@ EmbedHelper.prototype = {
       rect.x = cssCompositedRect.x;
     }
 
-    if (needYAxisMoving && aIsTextField) {
+    if (needYAxisMoving) {
       if (scrollToBottom) {
         rect.y = inputRect.y + inputRect.height - fixedCurrentViewport.height + margin;
-      }
-      else {
+      } else {
         rect.y = bRect.y;
       }
     } else {
