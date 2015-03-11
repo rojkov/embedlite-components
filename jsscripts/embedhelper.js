@@ -76,6 +76,7 @@ EmbedHelper.prototype = {
     addMessageListener("embedui:zoomToRect", this);
     // Metrics used when virtual keyboard is open/opening.
     addMessageListener("embedui:vkbFullyOpen", this);
+    addMessageListener("embedui:addhistory", this);
     addMessageListener("Memory:Dump", this);
     addMessageListener("Gesture:ContextMenuSynth", this);
     addMessageListener("embed:ContextMenuCreate", this);
@@ -343,6 +344,35 @@ EmbedHelper.prototype = {
             Services.embedlite.zoomToRect(winid, aMessage.data.x, aMessage.data.y, aMessage.data.width, aMessage.data.height);
           }
         }
+        break;
+      }
+      case "embedui:addhistory": {
+        // aMessage.data contains: 1) list of 'links' loaded from DB, 2) current 'index'.
+
+        let webNav = content.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIWebNavigation);
+        let docShell = webNav.QueryInterface(Ci.nsIDocShell);
+        let shist = webNav.sessionHistory.QueryInterface(Ci.nsISHistoryInternal);
+
+        try {
+          // Initially we load the current URL and that creates an unneeded entry in History -> purge it.
+          webNav.sessionHistory.PurgeHistory(1);
+        } catch (e) {
+            dump("Warning: couldn't PurgeHistory. Was it a file download?\n");
+        }
+
+        aMessage.data.links.forEach(function(link) {
+            let uri = Cc["@mozilla.org/network/standard-url;1"].createInstance(Ci.nsIURI);
+            let historyEntry = Cc["@mozilla.org/browser/session-history-entry;1"].createInstance(Ci.nsISHEntry);
+            uri.spec = link;
+            historyEntry.setURI(uri);
+            shist.addEntry(historyEntry, true);
+        });
+        webNav.sessionHistory.getEntryAtIndex(aMessage.data.index, true);
+        shist.updateIndex();
+
+        let initialURI = Cc["@mozilla.org/network/standard-url;1"].createInstance(Ci.nsIURI);
+        initialURI.spec = aMessage.data.links[aMessage.data.index];
+        docShell.setCurrentURI(initialURI);
         break;
       }
       case "embedui:vkbFullyOpen": {
